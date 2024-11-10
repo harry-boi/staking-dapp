@@ -192,4 +192,41 @@ contract StakingTest is Test {
         uint256 timeLeft = staking.checkTimeLeftToUnlock(HYBRID);
         assertEq(timeLeft, 0);
     }
+
+    function testOnlyAdminCanPauseStaking() public {
+        vm.startPrank(admin);
+        staking.pauseStaking();
+        vm.stopPrank();
+
+        assertEq(staking.isStakingPaused(), true);
+
+        vm.startPrank(HYBRID);
+        vm.expectRevert(Staking.Staking__NotAdmin.selector);
+        staking.pauseStaking();
+        vm.stopPrank();
+
+    }
+
+    function onlyAdminCanResumeStaking() public {
+        vm.startPrank(admin);
+        staking.resumeStaking();
+        vm.stopPrank();
+        assertEq(staking.isStakingPaused(), false);
+
+        vm.startPrank(HYBRID);
+        vm.expectRevert(Staking.Staking__NotAdmin.selector);
+        staking.pauseStaking();
+        vm.stopPrank();
+    }
+
+    function AdminCanUpdateApr() public {
+        vm.startPrank(admin);
+        uint256 newApr = 3;
+        staking.updateAPR(newApr);
+        vm.stopPrank();
+        assertEq(staking.getAprWeeklyPercentage(), newApr);
+    }
+
+
+
 }

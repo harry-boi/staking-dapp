@@ -216,4 +216,8 @@ contract Staking {
             return 0;
         }
     }
+
+    function isStakingPaused() public returns(bool){
+        return stakingPaused;
+    }
 }
