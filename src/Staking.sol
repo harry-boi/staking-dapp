@@ -143,8 +143,8 @@ contract Staking {
     }
 
     // Admin-only function to update APR
-    function updateAPR(uint256 _newApr) public onlyAdmin {
-        aprWeeklyPercentage = _newApr;
+    function updateAPR(uint256 _duration, uint256 _newApr) public onlyAdmin {
+        s_durationToApy[_duration] = _newApr;
         emit AprUpdated(_newApr);
     }
 
@@ -211,8 +211,8 @@ contract Staking {
         return reward;
     }
 
-    function getAprWeeklyPercentage() public view returns (uint256) {
-        return aprWeeklyPercentage;
+    function getAprPercentage(uint256 _duration) public view returns (uint256) {
+        return s_durationToApy[_duration];
     }
 
     function checkTimeLeftToUnlock(address user) public view returns (uint256) {

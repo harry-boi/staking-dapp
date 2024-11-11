@@ -139,9 +139,10 @@ contract StakingTest is Test {
     }
 
     function testCanCalculateReward() public stake {
+        uint256 stakedDuration = 1 weeks;
         uint256 expectedReward = staking.calculateReward(HYBRID);
         uint256 amountStaked = staking.getStakedBalance(HYBRID);
-        uint256 weeklyRate = (staking.getAprWeeklyPercentage() * amountStaked) /
+        uint256 weeklyRate = (staking.getAprPercentage(stakedDuration) * amountStaked) /
             100; //% of total amount staked
         uint256 weeksSinceStaked = (block.timestamp -
             staking.getStakeStartTime(HYBRID)) / 1 weeks;
@@ -221,10 +222,11 @@ contract StakingTest is Test {
 
     function AdminCanUpdateApr() public {
         vm.startPrank(admin);
+        uint256 duration = 1 weeks;
         uint256 newApr = 3;
-        staking.updateAPR(newApr);
+        staking.updateAPR(duration, newApr);
         vm.stopPrank();
-        assertEq(staking.getAprWeeklyPercentage(), newApr);
+        assertEq(staking.getAprPercentage(duration), newApr);
     }
 
 
