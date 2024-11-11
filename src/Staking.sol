@@ -46,12 +46,14 @@ contract Staking {
         uint256 totalAmountStaked;
         uint256 stakingDuration;
         uint256 stakingStartTime;
+        uint256 apy;
     }
 
     // State variables
     CodeToken private immutable i_codeToken;
     address private immutable i_admin;
     mapping(address => User) private s_userStakeDetails;
+    mapping(uint256 => uint256) public s_durationToApy;
     bool private stakingPaused;
     uint256 private aprWeeklyPercentage = 1; //1% per week
     uint256 private constant MINIMUM_STAKING_DURATION = 1 weeks;
@@ -66,6 +68,10 @@ contract Staking {
     constructor(address _admin, address _codeToken) {
         i_admin = _admin;
         i_codeToken = CodeToken(_codeToken);
+
+        //Initializing default APY
+        s_durationToApy[1 weeks] = 5; //offers a 5% APY to users after 1 week
+        s_durationToApy[1 weeks] = 15; //offers a 15% APY to users after 1 month
     }
 
     // Modifier to restrict access to only the admin
@@ -110,11 +116,13 @@ contract Staking {
             userStake.totalAmountStaked += amountToStake;
             // Extend the staking duration
             userStake.stakingDuration += duration;
+            userStake.apy = s_durationToApy[duration];
         } else {
             // This is the first stake for the user
             userStake.totalAmountStaked = amountToStake;
             userStake.stakingDuration = duration;
             userStake.stakingStartTime = block.timestamp;
+            userStake.apy = s_durationToApy[duration];
         }
 
         emit TokenStaked(msg.sender, amountToStake, duration);
