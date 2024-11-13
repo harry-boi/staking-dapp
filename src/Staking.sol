@@ -39,24 +39,25 @@ contract Staking {
     error Staking__InsufficientBalance();
     error Staking__NotEnoughAmountStaked();
     error Staking__TokensLocked();
-    error Staking__StakeDurationNotComplete();
+    error Staking__StakeIndexInvalid();
 
     // Type declarations
-    struct User {
-        uint256 totalAmountStaked;
+    struct UserStake {
+        uint256 amountStaked;
         uint256 stakingDuration;
         uint256 stakingStartTime;
-        uint256 apy;
+        uint256 apr;
+        uint256 stakeRewards;
     }
 
     // State variables
     CodeToken private immutable i_codeToken;
     address private immutable i_admin;
-    mapping(address => User) private s_userStakeDetails;
-    mapping(uint256 => uint256) public s_durationToApy;
+    mapping(address => UserStake[]) private s_userStakeDetails;
+    mapping(uint256 => uint256) private s_durationToApr;
     bool private stakingPaused;
-    uint256 private aprWeeklyPercentage = 1; //1% per week
-    uint256 private constant MINIMUM_STAKING_DURATION = 1 weeks;
+    uint256 private constant MINIMUM_STAKE_DURATION = 1 weeks;
+    uint256 private s_totalTokensStaked;
 
     // Events
     event TokenStaked(address indexed user, uint256 amount, uint256 duration);
@@ -64,22 +65,22 @@ contract Staking {
     event StakingPaused();
     event AprUpdated(uint256 newApr);
 
-    // Constructor
-    constructor(address _admin, address _codeToken) {
-        i_admin = _admin;
-        i_codeToken = CodeToken(_codeToken);
-
-        //Initializing default APY
-        s_durationToApy[1 weeks] = 5; //offers a 5% APY to users after 1 week
-        s_durationToApy[1 weeks] = 15; //offers a 15% APY to users after 1 month
-    }
-
     // Modifier to restrict access to only the admin
     modifier onlyAdmin() {
         if (msg.sender != i_admin) {
             revert Staking__NotAdmin();
         }
         _;
+    }
+
+    // Constructor
+    constructor(address _admin, address _codeToken) {
+        i_admin = _admin;
+        i_codeToken = CodeToken(_codeToken);
+
+        //Initializing default APY
+        s_durationToApr[1 weeks] = 3; //offers a 3% APR to users after 1 week
+        s_durationToApr[4 weeks] = 12; //offers a 12% APR to users after 1 month
     }
 
     // Function to allow users to stake tokens
@@ -96,7 +97,7 @@ contract Staking {
             revert Staking__NotEnoughStakingAmount();
         }
 
-        if (duration < MINIMUM_STAKING_DURATION) {
+        if (duration < MINIMUM_STAKE_DURATION) {
             revert Staking__NotEnoughStakingPeriod();
         }
 
@@ -107,23 +108,16 @@ contract Staking {
             amountToStake
         );
 
-        // Retrieve the user's current stake details
-        User storage userStake = s_userStakeDetails[msg.sender];
-
-        // Check if this is an additional stake or the first one
-        if (userStake.totalAmountStaked > 0) {
-            // User has staked before; add to their existing stake
-            userStake.totalAmountStaked += amountToStake;
-            // Extend the staking duration
-            userStake.stakingDuration += duration;
-            userStake.apy = s_durationToApy[duration];
-        } else {
-            // This is the first stake for the user
-            userStake.totalAmountStaked = amountToStake;
-            userStake.stakingDuration = duration;
-            userStake.stakingStartTime = block.timestamp;
-            userStake.apy = s_durationToApy[duration];
-        }
+        //set the user's new stake details
+        UserStake memory newUserStake = UserStake({
+            amountStaked: amountToStake,
+            stakingDuration: duration,
+            stakingStartTime: block.timestamp,
+            apr: s_durationToApr[duration],
+            stakeRewards: calculateReward(amountToStake, duration)
+        });
+        s_totalTokensStaked += amountToStake;
+        s_userStakeDetails[msg.sender].push(newUserStake);
 
         emit TokenStaked(msg.sender, amountToStake, duration);
     }
@@ -144,80 +138,110 @@ contract Staking {
 
     // Admin-only function to update APR
     function updateAPR(uint256 _duration, uint256 _newApr) public onlyAdmin {
-        s_durationToApy[_duration] = _newApr;
+        s_durationToApr[_duration] = _newApr;
         emit AprUpdated(_newApr);
     }
 
-    function unstake(uint256 amountToUnStake) public {
-        if (
-            amountToUnStake > s_userStakeDetails[msg.sender].totalAmountStaked
-        ) {
-            revert Staking__InsufficientBalance();
-        }
-
+    function claimReward(uint256 index) public {
         if (
             block.timestamp <
-            s_userStakeDetails[msg.sender].stakingStartTime +
-                MINIMUM_STAKING_DURATION
+            getStakeStartTime(msg.sender, index) +
+                getStakeDuration(msg.sender, index)
         ) {
             revert Staking__TokensLocked();
         }
 
-        User storage userStake = s_userStakeDetails[msg.sender];
-        userStake.totalAmountStaked -= amountToUnStake;
-
-        IERC20(i_codeToken).transfer(msg.sender, amountToUnStake);
-    }
-
-    function claimReward() public {
-        User storage userStake = s_userStakeDetails[msg.sender];
-        if (userStake.totalAmountStaked <= 0) {
+        if (getStakedBalance(msg.sender, index) <= 0) {
             revert Staking__NotEnoughAmountStaked();
         }
 
-        if (
-            block.timestamp <
-            userStake.stakingStartTime + userStake.stakingDuration
-        ) {
-            revert Staking__StakeDurationNotComplete();
+        if (index > s_userStakeDetails[msg.sender].length) {
+            revert Staking__StakeIndexInvalid();
         }
-        uint256 reward = calculateReward(msg.sender);
-        IERC20(i_codeToken).transfer(msg.sender, reward);
+
+        UserStake storage userStake = s_userStakeDetails[msg.sender][index];
+        s_totalTokensStaked -= userStake.amountStaked;
+        uint256 rewardAndStake = userStake.amountStaked +
+            userStake.stakeRewards;
+        userStake.amountStaked = 0;
+        userStake.stakeRewards = 0;
+
+        IERC20(i_codeToken).transfer(msg.sender, rewardAndStake);
     }
 
-    function calculateReward(address user) public view returns (uint256) {
-        uint256 weeklyRate = (aprWeeklyPercentage * getStakedBalance(user)) /
-            100; //% of total amount staked
-        uint256 weeksSinceStaked = (block.timestamp - getStakeStartTime(user)) /
-            MINIMUM_STAKING_DURATION;
-        uint256 reward = weeklyRate * weeksSinceStaked;
+    function calculateReward(
+        uint256 amountStaked,
+        uint256 duration
+    ) public view returns (uint256) {
+        uint256 durationInWeeks = duration / 1 weeks;
+        uint256 weeklyRate = (getAprPercentage(duration) * amountStaked) / 100; //% of total amount staked
+        uint256 reward = weeklyRate * durationInWeeks;
         return reward;
     }
 
-    function getStakedBalance(address user) public view returns (uint256) {
-        return s_userStakeDetails[user].totalAmountStaked;
+    function getStakedBalance(
+        address user,
+        uint256 index
+    ) public view returns (uint256) {
+        if (index > s_userStakeDetails[user].length) {
+            revert Staking__StakeIndexInvalid();
+        }
+        return s_userStakeDetails[user][index].amountStaked;
     }
 
-    function getStakeDuration(address user) public view returns (uint256) {
-        return s_userStakeDetails[user].stakingDuration;
+    function getStakeDuration(
+        address user,
+        uint256 index
+    ) public view returns (uint256) {
+        if (index > s_userStakeDetails[user].length) {
+            revert Staking__StakeIndexInvalid();
+        }
+        return s_userStakeDetails[user][index].stakingDuration;
     }
 
-    function getStakeStartTime(address user) public view returns (uint256) {
-        return s_userStakeDetails[user].stakingStartTime;
+    function getStakeStartTime(
+        address user,
+        uint256 index
+    ) public view returns (uint256) {
+        if (index > s_userStakeDetails[user].length) {
+            revert Staking__StakeIndexInvalid();
+        }
+        return s_userStakeDetails[user][index].stakingStartTime;
     }
 
-    function getRewardBalance(address user) public view returns (uint256) {
-        uint256 reward = calculateReward(user);
-        return reward;
+    function getRewardBalance(
+        address user,
+        uint256 index
+    ) public view returns (uint256) {
+        if (index > s_userStakeDetails[user].length) {
+            revert Staking__StakeIndexInvalid();
+        }
+        return s_userStakeDetails[user][index].stakeRewards;
+    }
+
+    function getUserStakeAprPercentage(
+        address user,
+        uint256 index
+    ) public view returns (uint256) {
+        if (index > s_userStakeDetails[user].length) {
+            revert Staking__StakeIndexInvalid();
+        }
+        return s_userStakeDetails[user][index].apr;
     }
 
     function getAprPercentage(uint256 _duration) public view returns (uint256) {
-        return s_durationToApy[_duration];
+        return s_durationToApr[_duration];
     }
 
-    function checkTimeLeftToUnlock(address user) public view returns (uint256) {
-        uint256 totalDuration = getStakeStartTime(user) +
-            getStakeDuration(user);
+    function checkTimeLeftToUnlock(
+        address user,
+        uint256 index
+    ) public view returns (uint256) {
+        if (index > s_userStakeDetails[user].length) {
+            revert Staking__StakeIndexInvalid();
+        }
+        uint256 totalDuration = getStakeStartTime(user, index) +
+            getStakeDuration(user, index);
         if (block.timestamp < totalDuration) {
             return totalDuration - block.timestamp;
         } else {
@@ -225,7 +249,19 @@ contract Staking {
         }
     }
 
-    function isStakingPaused() public returns(bool){
+    function isStakingPaused() public view returns (bool) {
         return stakingPaused;
+    }
+
+    function getTotalTokensStaked() public view returns (uint256) {
+        return s_totalTokensStaked;
+    }
+
+    function getCtToken() public view returns (CodeToken) {
+        return i_codeToken;
+    }
+
+    function getAdmin() public view returns (address) {
+        return i_admin;
     }
 }

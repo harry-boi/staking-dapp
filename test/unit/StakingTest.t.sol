@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.25;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, console} from "forge-std/Test.sol";
 import {Staking} from "../../src/Staking.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CodeToken} from "../../src/CodeToken.sol";
@@ -17,7 +17,7 @@ contract StakingTest is Test {
     uint256 public constant STAKING_SUPPLY = 1_000_000 * 10 ** 18;
     uint256 public constant USER_ALLOCATION = 10000e18;
     uint256 public constant USER_STAKE = 1000e18;
-    uint256 public constant STAKE_DURATION = 3 weeks;
+    uint256 public constant STAKE_DURATION = 4 weeks;
 
     function setUp() public {
         deployer = new DeployStaking();
@@ -81,9 +81,9 @@ contract StakingTest is Test {
             IERC20(ct).balanceOf(address(staking)),
             STAKING_SUPPLY + USER_STAKE
         );
-        uint256 amountStaked = staking.getStakedBalance(HYBRID);
-        uint256 stakeDuration = staking.getStakeDuration(HYBRID);
-        uint256 stakeStartTime = staking.getStakeStartTime(HYBRID);
+        uint256 amountStaked = staking.getStakedBalance(HYBRID, 0);
+        uint256 stakeDuration = staking.getStakeDuration(HYBRID, 0);
+        uint256 stakeStartTime = staking.getStakeStartTime(HYBRID, 0);
         assertEq(amountStaked, USER_STAKE);
         assertEq(stakeDuration, STAKE_DURATION);
         assertEq(stakeStartTime, block.timestamp);
@@ -98,99 +98,113 @@ contract StakingTest is Test {
             IERC20(ct).balanceOf(address(staking)),
             STAKING_SUPPLY + USER_STAKE + USER_STAKE
         );
-        uint256 amountStaked = staking.getStakedBalance(HYBRID);
-        uint256 stakeDuration = staking.getStakeDuration(HYBRID);
-        uint256 stakeStartTime = staking.getStakeStartTime(HYBRID);
-        assertEq(amountStaked, USER_STAKE + USER_STAKE);
-        assertEq(stakeDuration, STAKE_DURATION + STAKE_DURATION);
+        uint256 amountStaked = staking.getStakedBalance(HYBRID, 1);
+        uint256 stakeDuration = staking.getStakeDuration(HYBRID, 1);
+        uint256 stakeStartTime = staking.getStakeStartTime(HYBRID, 1);
+        assertEq(amountStaked, USER_STAKE);
+        assertEq(stakeDuration, STAKE_DURATION);
         assertEq(stakeStartTime, block.timestamp);
     }
 
-    function testCannotUnstakeMoreThanStakedTokens() public stake {
-        vm.startPrank(HYBRID);
-        vm.expectRevert(Staking.Staking__InsufficientBalance.selector);
-        staking.unstake(STAKING_SUPPLY);
-        vm.stopPrank();
-    }
-
-    function testCannotUnstakeUntilAWeekAfter() public stake {
+    function testCannotClaimRewardsUntilDurationOver() public stake {
         vm.startPrank(HYBRID);
         vm.expectRevert(Staking.Staking__TokensLocked.selector);
-        staking.unstake(USER_STAKE);
+        staking.claimReward(0);
         vm.stopPrank();
     }
 
-    function testUserCanUnstake() public stake {
+    function testUserCannotClaimRewardIfNoStakedTokens() public stake {
+        vm.startPrank(HYBRID);
+        vm.warp(block.timestamp + 4 weeks);
+        vm.roll(block.number + 10);
+        staking.claimReward(0);
+        vm.expectRevert(Staking.Staking__NotEnoughAmountStaked.selector);
+        staking.claimReward(0);
+        vm.stopPrank();
+    }
+
+    function testCannotClaimRewardsIfStakeDoesntExist() public stake {
+        vm.startPrank(HYBRID);
+        vm.expectRevert(Staking.Staking__StakeIndexInvalid.selector);
+        staking.claimReward(5);
+        vm.stopPrank();
+    }
+
+    function testUserCanClaimRewards() public stake {
         uint256 startingContractBalance = IERC20(ct).balanceOf(
             address(staking)
         );
         uint256 startingUserBalance = IERC20(ct).balanceOf(HYBRID);
+        uint256 expectedReward = staking.getRewardBalance(HYBRID, 0);
+        uint256 actualReward = staking.calculateReward(
+            staking.getStakedBalance(HYBRID, 0),
+            staking.getStakeDuration(HYBRID, 0)
+        );
         vm.startPrank(HYBRID);
-        vm.warp(block.timestamp + 1 weeks);
+        vm.warp(block.timestamp + STAKE_DURATION);
         vm.roll(block.number + 10);
-        staking.unstake(USER_STAKE);
+        staking.claimReward(0);
         vm.stopPrank();
-        uint256 amountStaked = staking.getStakedBalance(HYBRID);
+        uint256 amountStaked = staking.getStakedBalance(HYBRID, 0);
         uint256 endContractBalance = IERC20(ct).balanceOf(address(staking));
         uint256 endUserBalance = IERC20(ct).balanceOf(HYBRID);
+        uint256 rewardAfterClaiming = staking.getRewardBalance(HYBRID, 0);
+        assertEq(expectedReward, actualReward);
         assertEq(amountStaked, 0);
-        assertEq(startingContractBalance, endContractBalance + USER_STAKE);
-        assertEq(startingUserBalance + USER_STAKE, endUserBalance);
+        assertEq(rewardAfterClaiming, 0);
+        assertEq(
+            startingContractBalance,
+            endContractBalance + USER_STAKE + expectedReward
+        );
+        assertEq(
+            startingUserBalance + USER_STAKE + expectedReward,
+            endUserBalance
+        );
+    }
+
+    function testUserCanStakeAfterClaimingRewards() public stake {
+        vm.startPrank(HYBRID);
+        vm.warp(block.timestamp + STAKE_DURATION);
+        vm.roll(block.number + 10);
+        staking.claimReward(0);
+        IERC20(ct).approve(address(staking), USER_STAKE);
+        staking.stake(USER_STAKE, STAKE_DURATION);
+        vm.stopPrank();
+        uint256 amountStaked = staking.getStakedBalance(HYBRID, 1);
+        uint256 stakeDuration = staking.getStakeDuration(HYBRID, 1);
+        uint256 stakeStartTime = staking.getStakeStartTime(HYBRID, 1);
+        assertEq(amountStaked, USER_STAKE);
+        assertEq(stakeDuration, STAKE_DURATION);
+        assertEq(stakeStartTime, block.timestamp);
     }
 
     function testCanCalculateReward() public stake {
-        uint256 stakedDuration = 1 weeks;
-        uint256 expectedReward = staking.calculateReward(HYBRID);
-        uint256 amountStaked = staking.getStakedBalance(HYBRID);
-        uint256 weeklyRate = (staking.getAprPercentage(stakedDuration) * amountStaked) /
-            100; //% of total amount staked
-        uint256 weeksSinceStaked = (block.timestamp -
-            staking.getStakeStartTime(HYBRID)) / 1 weeks;
-        uint256 actualReward = weeklyRate * weeksSinceStaked;
-        assertEq(actualReward, expectedReward);
-    }
-
-    function testUserCannotClaimRewardIfNoStakedTokens() public {
-        vm.startPrank(HYBRID);
-        vm.warp(block.timestamp + 1 weeks);
-        vm.roll(block.number + 10);
-        vm.expectRevert(Staking.Staking__NotEnoughAmountStaked.selector);
-        staking.claimReward();
-        vm.stopPrank();
-    }
-
-    function testCannotClaimIfStakeDurationIsNotOver() public stake {
-        vm.startPrank(HYBRID);
-        vm.expectRevert(Staking.Staking__StakeDurationNotComplete.selector);
-        staking.claimReward();
-        vm.stopPrank();
-    }
-
-    function testUserCanClaimReward() public stake {
-        uint256 startingContractBalance = IERC20(ct).balanceOf(
-            address(staking)
+        uint256 actualReward = staking.calculateReward(
+            staking.getStakedBalance(HYBRID, 0),
+            staking.getStakeDuration(HYBRID, 0)
         );
-        uint256 startingUserBalance = IERC20(ct).balanceOf(HYBRID);
-        vm.startPrank(HYBRID);
-        vm.warp(block.timestamp + 4 weeks);
-        vm.roll(block.number + 30);
-        staking.claimReward();
-        vm.stopPrank();
-        uint256 actualReward = staking.getRewardBalance(HYBRID);
-        uint256 endContractBalance = IERC20(ct).balanceOf(address(staking));
-        uint256 endUserBalance = IERC20(ct).balanceOf(HYBRID);
-        uint256 expectedReward = endUserBalance - startingUserBalance;
+        uint256 amountStaked = staking.getStakedBalance(HYBRID, 0);
+        uint256 weeklyRate = (staking.getUserStakeAprPercentage(HYBRID, 0) *
+            amountStaked) / 100; //% of total amount staked
+        uint256 expectedReward = (weeklyRate *
+            staking.getStakeDuration(HYBRID, 0)) / 1 weeks;
         assertEq(actualReward, expectedReward);
-        assertEq(startingContractBalance, endContractBalance + actualReward);
+    }
+
+    function testCannotCheckTimeLeftIfInvalidStakeIndex() public {
+        vm.startPrank(HYBRID);
+        vm.expectRevert(Staking.Staking__StakeIndexInvalid.selector);
+        staking.checkTimeLeftToUnlock(HYBRID, 4);
+        vm.stopPrank();
     }
 
     function testCanCheckTimeLeft() public stake {
-        uint256 actualTimeLeft = STAKE_DURATION;
-        uint256 expectedTimeLeft = staking.checkTimeLeftToUnlock(HYBRID);
+        uint256 expectedTimeLeft = STAKE_DURATION;
+        uint256 actualTimeLeft = staking.checkTimeLeftToUnlock(HYBRID, 0);
         assertEq(actualTimeLeft, expectedTimeLeft);
-        vm.warp(block.timestamp + 3 weeks);
+        vm.warp(block.timestamp + 7 weeks);
         vm.roll(block.number + 30);
-        uint256 timeLeft = staking.checkTimeLeftToUnlock(HYBRID);
+        uint256 timeLeft = staking.checkTimeLeftToUnlock(HYBRID, 0);
         assertEq(timeLeft, 0);
     }
 
@@ -205,11 +219,11 @@ contract StakingTest is Test {
         vm.expectRevert(Staking.Staking__NotAdmin.selector);
         staking.pauseStaking();
         vm.stopPrank();
-
     }
 
-    function onlyAdminCanResumeStaking() public {
+    function testOnlyAdminCanResumeStaking() public {
         vm.startPrank(admin);
+        staking.pauseStaking();
         staking.resumeStaking();
         vm.stopPrank();
         assertEq(staking.isStakingPaused(), false);
@@ -220,15 +234,38 @@ contract StakingTest is Test {
         vm.stopPrank();
     }
 
-    function AdminCanUpdateApr() public {
+    function testOnlyAdminCanUpdateApr() public {
+        vm.startPrank(HYBRID);
+        uint256 duration = 1 weeks;
+        uint256 newApr = 4;
+        vm.expectRevert(Staking.Staking__NotAdmin.selector);
+        staking.updateAPR(duration, newApr);
+        vm.stopPrank();
+    }
+
+    function testAdminCanUpdateApr() public {
         vm.startPrank(admin);
         uint256 duration = 1 weeks;
-        uint256 newApr = 3;
+        uint256 newApr = 4;
         staking.updateAPR(duration, newApr);
         vm.stopPrank();
         assertEq(staking.getAprPercentage(duration), newApr);
     }
 
+    function testCanGetTotalTokensStaked() public stake {
+        assertEq(staking.getTotalTokensStaked(), USER_STAKE);
+        vm.startPrank(HYBRID);
+        vm.warp(block.timestamp + STAKE_DURATION);
+        vm.roll(block.number + 10);
+        staking.claimReward(0);
+        vm.stopPrank();
+        assertEq(staking.getTotalTokensStaked(), 0);
+    }
 
-
+    function testConstructorSetsValues() public view {
+        assertEq(address(staking.getCtToken()), address(ct));
+        assertEq(staking.getAdmin(), admin);
+        assertEq(staking.getAprPercentage(STAKE_DURATION), 12);
+        assertEq(staking.getAprPercentage(1 weeks), 3);
+    }
 }

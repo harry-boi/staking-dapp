@@ -8,16 +8,16 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CodeToken} from "../src/CodeToken.sol";
 
 contract DeployStaking is Script {
-    //address ct = 0xD207c672535b53496Ffff39cCE8D9fD2cf5352db; //contract address of token already deployed on base sepolia
-    CodeToken ct;
+    address ct = 0xD207c672535b53496Ffff39cCE8D9fD2cf5352db; //contract address of token already deployed on base sepolia
+    // CodeToken ct; //use for local setup
     Staking staking;
-    address private constant ADMIN = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
+    address private constant ADMIN = 0xE38467773B31EA89d366e122E950148BBcBDc21A;
 
     function run() external returns (Staking, CodeToken, address) {
         vm.startBroadcast(ADMIN);
-        ct = new CodeToken();
+        //ct = new CodeToken(); //use for local setup
         staking = new Staking(ADMIN, address(ct));
         vm.stopBroadcast();
-        return (staking, ct, ADMIN);
+        return (staking, CodeToken(ct), ADMIN);
     }
 }
